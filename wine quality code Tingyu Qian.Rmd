@@ -1,0 +1,236 @@
+---
+title: "Project 1 wine quality report"
+author: "Tingyu Qian"
+date: "2023-09-14"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(corrplot)
+library(xgboost)
+library(caret)  
+library(e1071)
+library(car)
+```
+
+The dataset is from UCI machine learning database repository https:// archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/. In the red wine dataset, there are 1599 observations, and in the white wine dataset, there are 4898 observations. In each of these two datasets, there are 12 variables, one of them is wine quality (scored between 0 and 10), and the others are chemical attributes (quantitative), which are as follows: Fixed acidity, Volatile acidity, Citric acid, Residual sugar, Chlorides, Free sulfur dioxide, Total sulfur dioxide, Density, PH, Sulphates, and Alcohol. The final goal of this project is to devise and implement a method to determine whether a wine is Red or White given its chemical attributes information.
+
+## Part 1
+In order to better analyze the data, we need to combine the red wine dataset and the white wine dataset. Therefore, the dataset called all_wine contains 1599 observations of red wine and 4898 observations of white wine. In order to avoid being unable to distinguish which is red wine and which is white wine, we added a column named type. In this column, we use 1 to represent red wine and 0 to represent white wine. The first 10 rows in the dataset all_wine are shown below:
+```{r, echo=FALSE}
+#read the red wine and white wine csv files#
+red_wine = read.csv("~/Desktop/STAT 497/red.csv")
+white_wine = read.csv("~/Desktop/STAT 497/white.csv")
+
+#add a new column in order to code the red wine by 1 and the white wine by 0"
+red_wine_type = c(1)
+red_wine$type <- red_wine_type
+white_wine_type = c(0)
+white_wine$type <- white_wine_type
+
+#combine to files
+all_wine <- rbind(red_wine, white_wine)
+```
+
+```{r}
+#display the first 10 observations
+head(all_wine, 10)
+```
+
+In order to make the prediction results more accurate, we need to check the data first. Check whether the data set contains missing values and extreme values. We need to process the corresponding data if any abnormal data are found. After we checked whether there were missing value, we found that there were no missing values in the dataset all_wine. Now we can check whether the dataset contains extreme values separately. 
+
+```{r, include=FALSE}
+#check for the abnormal data (missing value)
+which(is.na(all_wine))
+sum(is.na(all_wine))
+```
+
+```{r,echo=FALSE}
+#check abnormal data(extreme value)
+summary(all_wine)
+```
+
+The above data represents the minimum value, first quantile, median, mean, third quantile, and maximum value of each variable in the dataset. The first quantile, often denoted as Q1 or the 25th percentile, is a statistical measure used to divide a dataset into four equal parts. It represents the value below which 25% of the data falls. In other words, it is the 25th percentile of the dataset. The third quantile, often denoted as Q3 or the 75th percentile, is a statistical measure used to divide a dataset into four equal parts. It represents the value below which 75% of the data falls. In other words, it is the 75th percentile of the dataset. From the values above, we can use Interquartile Range (IQR) method, a statistical technique used for identifying potential outliers in a dataset. It is based on the concept of quartiles, specifically the first quartile (Q1) and the third quartile (Q3). The IQR is the range between Q1 and Q3. Outliers are data points that fall significantly below Q1 or above Q3. We commonly used threshold of 1.5 times the IQR to determine the bounds for potential outliers. 
+
+```{r, echo=FALSE}
+par(mfrow = c(3,4))
+hist(all_wine$fixed.acidity,cex.main = 0.8, las=1)
+hist(all_wine$volatile.acidity,cex.main = 0.8, las=1)
+hist(all_wine$citric.acid,cex.main = 0.8, las=1)
+hist(all_wine$residual.sugar,cex.main = 0.8, las=1)
+hist(all_wine$chlorides,cex.main = 0.8, las=1)
+hist(all_wine$free.sulfur.dioxide,cex.main = 0.8, las=1)
+hist(all_wine$total.sulfur.dioxide,cex.main = 0.8, las=1)
+hist(all_wine$density,cex.main = 0.8, las=1)
+hist(all_wine$pH,cex.main = 0.8, las=1)
+hist(all_wine$sulphates,cex.main = 0.8, las=1)
+hist(all_wine$alcohol,cex.main = 0.8, las=1)
+hist(all_wine$quality,cex.main = 0.8, las=1)
+par(mfrow = c(1,1))
+```
+
+The 12 pictures above are histograms of all variables in the all_wine dataset, and histogram is a graphical representation of the distribution of a dataset. The x-axis of all histograms above represents the range of values of the variable. The y-axis of all histograms above represents the frequency or count of data points that fall into each interval on the x-axis. By looking at the distribution of each variable in the all_wine dataset, we found that although some histograms did not show a normal distribution, some values even more than `1.5*IQR` below Q1 or more than `1.5*IQR` above Q3, (`IQR = Q3-Q1`) which is the occurrence of extreme values. However, since these extreme values are not very different from the normal data, and removing these extreme values will not have a big impact on the final results, we will retain all the data in these datasets here.
+
+## Part 2
+
+(a)
+
+To determine marginal relationships between wine quality and chemical attributes, we chose to use the Spearman rank correlation coefficient. The calculation principle of Spearman rank correlation coefficient is as follows:
+1. Rank the values of each variable separately, from lowest to highest, assigning them a rank. If there are ties (i.e., multiple values with the same value), assign the average rank to all tied values.
+2. Calculate the difference between the ranks for each pair of data points for both variables.
+3. Square these differences and calculate the sum of the squared differences.
+4. Use the formula for Spearman's rank correlation coefficient:
+$\rho = 1-\frac{6\sum d^2}{n(n^2-1)}$
+Where:
+$\rho$ is Spearman's rank correlation coefficient.
+$\sum d^2$ is the sum of the squared rank differences.
+n is the number of data points.
+
+Spearman's rank correlation coefficient was chosen to look at marginal relationships because it robust to outliers, easy to compute, and because Spearman's rank correlation does not assume that the data follows a specific probability distribution (such as the normal distribution), so it robust to deviations from normality.
+
+```{r, fig.height = 8, fig.width = 8,echo=FALSE}
+all_wine <- subset(all_wine, select = -type)
+all_wine_cor = cor(all_wine, method = c("spearman"))
+corrplot(all_wine_cor,
+         method="color", addCoef.col = "black")
+```
+
+The picture above is the correlation matrix, a table that displays the Pearson correlation coefficients between many variables. Each cell in the table shows the correlation between two specific variables. Correlation coefficients measure the strength and direction of a linear relationship between two continuous variables. The value of a correlation coefficient ranges from -1 to 1. A correlation coefficient of 1 indicates a strong positive linear relationship. A correlation coefficient of -1 indicates a strong negative linear relationship. From the correlation matrix above, differnet color represent different levels of correlation. The darker the blue, the stronger the positive correlation between the two variables, and the darker the red, the stronger the negative correlation between the two variables. By looking the correlation matrix, we can find that density has a strong negative correlation with alcohol, which is -0.7. Total.sulful.dioxide has a strong positive correlation with free.sulfur.dioxide, which is 0.74.
+
+(b)
+
+We can use the wine quality as the response variable, and then use the remaining 11 chemical attributes as explanatory variables and generate a multiple linear regression model. In a multiple linear regression model, we have more than one independent variable (explantory variables) to predict a single dependent (response) variable. The model assumes a linear relationship between the dependent variable and all the independent variables. Equation for multiple linear regression model: $Y = \beta _{0}+\beta_{1}X_{1}+\beta_{2}X_{2}+...+\beta_{p}X_{p}+\epsilon$, where $\beta_{0}, \beta_{1},...,\beta_{p}$ are coefficients or parameters associated with each independent variable, representing the change in Y for a one-unit change in each corresponding X while holding all other variables constant. $X_{1}, X_{2}, \dots, X_{p}$ are the independent variables (explantory variables) that influence Y. $\epsilon$ is the error term, representing the unexplained or random variation in Y.
+```{r}
+regression_model_all <- lm(quality ~ fixed.acidity + volatile.acidity +
+                          citric.acid + residual.sugar + chlorides + 
+                          free.sulfur.dioxide + total.sulfur.dioxide + 
+                          density + pH + sulphates + alcohol, data = all_wine)
+summary(regression_model_all)
+```
+The linear regression model will be
+
+Wine quality = 55.76 + 0.06768*fixed.acidity - 1.328*volatile.acidity - 0.1097*citric.acid + 0.04356*residual.sugar - 0.4837*chlorides + 0.00597*free.sulfur.dioxide - 0.002481*total.sulfur.dioxide - 50.497*density + 0.4393*pH + 0.7683*sulphates + 0.267*alcohol
+
+By looking the p-value of each chemical attributes, we can find that variable citric.acid and variable chlorides have bigger p-value (0.168 and 0.146 respectively), and the rest of the variables and the overall F-test p-value are significant (p<0.05).
+
+To make the model results more accurate, we can use the Akaike Information Criterion (AIC). The AIC is a tool for comparing the goodness of fit of different statistical models to a given dataset. It is based on the principle of finding a balance between the goodness of fit of the model and the complexity of the model. The formula of AIC is `AIC = -2 * log-likelihood + 2 * k`
+
+log-likelihood is the maximized value of the likelihood function for the model, given the data.
+
+k is the number of parameters in the model.
+
+Our goal is to maximize the `log-likelihood`, and because we have -2 before the `log-likelihood`, so our goal is to minimize the `-2*log-likelihood`. The smaller value of AIC, the better the model fits the data.
+
+AIC has lots of advantages:(1) Model selection:It balances the trade-off between model complexity and goodness of fit, helping us choose the model that best explains the data without overfitting.(2) Generalizability: Models selected using AIC tend to have better generalizability to new, unseen data because they are less likely to be overfitting the training data.
+
+```{r}
+AIC_all = step (regression_model_all)
+```
+
+After we use the AIC, we can see all the printout values, and the started AIC value is -3982.79. The AIC column in the picture represents the how will AIC value change after we drop the corresponding value. From the picture and the results above, we can find that as long as we drop off the variable citric.acid, our AIC value become smaller, which is a good result (the smaller the AIC value, the better the model is). However, if we drop off other variables, our AIC value will increase. So we can only drop citric.acid predictor, and then we are having a small AIC value. We can see the summarized statistic on my final model after the variable selection below:
+
+```{r}
+summary(AIC_all)
+```
+
+By looking the summarized statistic on my final model of all_wine, we can find that 9 variables' (fixed.acidity, volatile.acidity, residual.sugar, free.sulfur.dioxide, total.sulfur.dioxide, density, pH, sulphates, alcohol) p-value are signiftcant, and the variable chlorides's p-value become smaller after we use the Akaike Information Criterion (AIC) method. The overall F test's p-value is significant, too. The new linear regression model becomes:
+
+Wine quality = 55.94 + 0.0627*fixed.acidity - 1.287*volatile.acidity+ 0.0434*residual.sugar - 0.555*chlorides + 0.006*free.sulfur.dioxide - 0.002546*total.sulfur.dioxide - 55.15*density + 0.4481*pH + 0.7637*sulphates + 0.249*alcohol
+
+(c)
+```{r,echo=FALSE,results="hide", fig.keep = "none"}
+#Check for red wine
+regression_model_red <- lm(quality ~ fixed.acidity + volatile.acidity
+                           +citric.acid + residual.sugar + 
+                            chlorides + free.sulfur.dioxide
+                           +total.sulfur.dioxide + density + pH +
+                            sulphates + alcohol, data = red_wine)
+summary(regression_model_red)
+
+AIC_red = step (regression_model_red)
+
+summary(AIC_red)
+```
+
+```{r,echo=FALSE,results="hide", fig.keep = "none"}
+#Check for white wine
+regression_model_white <- lm(quality ~ fixed.acidity + volatile.acidity
+                           +citric.acid + residual.sugar + 
+                            chlorides + free.sulfur.dioxide
+                           +total.sulfur.dioxide + density + pH +
+                            sulphates + alcohol, data = white_wine)
+
+summary(regression_model_white)
+AIC_white = step (regression_model_white)
+
+summary(AIC_white)
+```
+
+After we test the relationsip in all_wine dataset to the white_wine dataset and red_wine dataset, we find that the important relationships are not consistent across the wine types. 
+
+For the red wine, the started AIC value is -1375.49, and there are 4 variables (density, fixed.acidity, residual.sugar, citric.acid) we need to drop. After we drop these 4 variables, the AIC value becomes -1380.79. By looking the summarized statistic for the red wine find model, we can find that rest of all variables' p-value and over all F test's p-value are significant (P<0.05). 
+
+For the white wine, the started AIC value is -2788.44, and there are 3 variables (citric.acid, chlorides, total.sulfur.dioxide) we need to drop. After we drop these 3 variables, the AIC value becomes -2793.63. By looking the summarized statistic for the white wine find model, we can find that rest of all variables' p-value and over all F test's p-value are significant (P<0.05). 
+
+## Part 3
+
+In order to use chemical attributes information to determine whether a wine is red wine or white wine, we need to use classification in XGBoost. XGBoost (Extreme Gradient Boosting) is a popular machine learning algorithm that is primarily used for classification and regression tasks. It's essential to split the data into a training set and a testing set to evaluate the model's performance. Because we need to use chemical attributes to determine the type of wine, we need to first separate the chemical attributes to be used from the type of wine. 
+
+```{r}
+all_wine <- rbind(red_wine, white_wine)
+cols_to_exclude <- c("fixed.acidity", "volatile.acidity", "citric.acid", "residual.sugar", 
+                     "chlorides", "free.sulfur.dioxide", "total.sulfur.dioxide",
+                     "density", "pH", "sulphates", "alcohol")
+X <- all_wine[, names(all_wine) %in% cols_to_exclude]
+
+y <- all_wine$type
+```
+
+We divide 70% of the all_wine dataset into the training dataset and 30% into the test dataset.
+
+```{r}
+set.seed(123)
+trainIndex <- createDataPartition(y, p = 0.7, list = FALSE)
+X_train <- X[trainIndex, ]
+y_train <- y[trainIndex]
+X_test <- X[-trainIndex, ]
+y_test <- y[-trainIndex]
+```
+
+Next step is to train an XGBoost classifier using the XGBoost function, adjust the parameters like nrounds, objective, and eval_metric. 
+
+```{r, results="hide"}
+xgb_model <- xgboost(data = as.matrix(X_train), 
+                     label = y_train, 
+                     objective = "binary:logistic", # For binary classification
+                     eval_metric = "logloss",    # Evaluation metric
+                     nrounds = 100) # Number of boosting rounds
+```
+
+Objective is binary:logistic, because binary:logistic is a parameter used to specify the objective function for binary classification problems. The logistic regression model is defined by the equation $\mathbf{P}(y=1|X)=\frac{1}{1+e^{-F(x)}}$. Given an input vector X of features and a binary response variable y (type of the wine, red wine or white wine), the binary logistic regression model can be estimate the probability $\mathbf{P}(y=1|X)$ that the response variable y is equal to 1 (red wine) based on the input features X. F(x) in the equation ofter expressed as $F(x) = \beta 0+\beta 1X1+\beta 2X2+...+\beta pXp$, where $\beta 0, \beta 1,...,\beta p$ are coefficients to be estimated during training. 
+
+We choose to use "logloss" in eval_metric parameter. "logloss" is logarithmic loss, which quantifies how well the predicted probabilities match the true class labels. Lower logloss values indicate better model performance. So logarithmic loss use the equation $Log Loss = -(y_{i}log(p_{i})+(1-y_{i})log(1-p_{i})$, where $y_{i}$ is the binary label (red wine or white white, 0 or 1), and $p_{i}$ is the predicted probability that the data belongs to 1 (red wine). 
+
+nrounds is the number of boosting rounds, which is number of iterations or decision trees that are built during the training process. Each boosting round adds a new decision tree to the ensemble and improves the model's performance. However, it is not that more is better, because if there are too many, it will be overfitting. After training the model, we can make a prediction on the test data and then evaluate the performance.
+
+```{r}
+y_pred_probs <- predict(xgb_model, newdata = as.matrix(X_test), type = "prob")
+y_pred <- ifelse(y_pred_probs > 0.5, 1, 0)
+conf_matrix <- table(y_pred, y_test)
+conf_matrix
+```
+
+Above is confusion matrix, also known as an error matrix, a table that is often used to describe the performance of a classification model on a set of test data for which the true values are known. The confusion matrix is typically organized in a 2x2 table. The first column is Actual positive and Actual negative, which is 0 and 1, stands for actual white wine and actual red wine. The first row is Predicted positve and Predicted Negative, which is 0 and 1, stands for predicted white wine and predicted red wine. Therefore, in the 2x2 table above, there are 1463 data predict correctly for white wine, and 2 predict wrongly for white wine (actual white wine, but predict to red wine). There are 476 data predict correctly for red wine, and 8 predict wrongly for red wine (actual red wine, but predict to white wine). 
+
+```{r}
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+accuracy
+```
+
+In order to know the accuracy of the prediction, we can use $\frac{right~predict~of~red~wine + right~predict~of~white~wine}{all~red~wine + all~white~wine}$, and the result is 0.9948692.
+
+There are some limitations with XGBoost. Firstly, XGBoost can be prone to overfitting. XGBoost uses decision trees as weak learners. If the trees are allowed to grow too deep during training, they can capture noise in the data and overfit. In order to mitigate this issue, I choose to use nrounds = 100. Secondly, XGBoost has limited interpretability. XGBoost is a machine learning technique that aggregates the output of numerous decision trees to generate predictions. The amalgamation of these trees can create a remarkably intricate model, making it challenging to discern the specific impact of each individual tree on the ultimate prediction. XGBoost is often considered a "black-box" model due to its absence of clarity regarding the mechanisms underlying its predictions. It doesn't furnish clear-cut rules or equations that elucidate how it reaches its decision-making outcomes. 
